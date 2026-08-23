@@ -44,6 +44,27 @@
 //  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
 #include "GridNotifiersImpl.h"
 
+namespace
+{
+    // Returns the GUID of whoever brought this object into the world: its owner/charmer if any,
+    // its summoner otherwise. Empty for objects that were not summoned by anyone.
+    ObjectGuid GetSummonerOrOwnerGUID(WorldObject const* obj)
+    {
+        if (Creature const* creature = obj->ToCreature())
+        {
+            if (ObjectGuid ownerGUID = creature->GetCharmerOrOwnerGUID())
+                return ownerGUID;
+
+            if (TempSummon const* summon = creature->ToTempSummon())
+                return summon->GetSummonerGUID();
+        }
+        else if (GameObject const* gameObject = obj->ToGameObject())
+            return gameObject->GetOwnerGUID();
+
+        return ObjectGuid::Empty;
+    }
+}
+
 SmartScript::SmartScript()
 {
     go = nullptr;
@@ -1459,6 +1480,35 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
                     }
                     else
                         ai->SetData(e.action.setData.field, e.action.setData.data);
+                }
+            }
+            break;
+        }
+        case SMART_ACTION_INC_DATA:
+        {
+            WorldObject* invoker = me ? static_cast<WorldObject*>(me) : static_cast<WorldObject*>(go);
+
+            for (WorldObject* target : targets)
+            {
+                if (Creature* cTarget = target->ToCreature())
+                {
+                    if (SmartAI* smartAI = CAST_AI(SmartAI, cTarget->AI()))
+                    {
+                        uint32 const newValue = smartAI->GetData(e.action.setData.field) + e.action.setData.data;
+                        smartAI->SetData(e.action.setData.field, newValue, invoker);
+                    }
+                    else
+                        LOG_ERROR("sql.sql", "SmartScript: Action target for SMART_ACTION_INC_DATA is not using SmartAI, skipping");
+                }
+                else if (GameObject* oTarget = target->ToGameObject())
+                {
+                    if (SmartGameObjectAI* smartGOAI = CAST_AI(SmartGameObjectAI, oTarget->AI()))
+                    {
+                        uint32 const newValue = smartGOAI->GetData(e.action.setData.field) + e.action.setData.data;
+                        smartGOAI->SetData(e.action.setData.field, newValue, invoker);
+                    }
+                    else
+                        LOG_ERROR("sql.sql", "SmartScript: Action target for SMART_ACTION_INC_DATA is not using SmartGameObjectAI, skipping");
                 }
             }
             break;
@@ -4129,6 +4179,49 @@ void SmartScript::GetTargets(ObjectVector& targets, SmartScriptHolder const& e, 
             }
             break;
         }
+        case SMART_TARGET_SHARED_OWNER_ENTITIES:
+        {
+            WorldObject* ref = GetBaseObject();
+
+            if (!ref)
+            {
+                LOG_ERROR("scripts.ai.sai", "SMART_TARGET_SHARED_OWNER_ENTITIES: Entry {} SourceType {} Event {} Action {} Target {} is missing base object.",
+                    e.entryOrGuid, e.GetScriptType(), e.event_id, e.GetActionType(), e.GetTargetType());
+                break;
+            }
+
+            ObjectGuid ownerGUID = GetSummonerOrOwnerGUID(ref);
+            if (!ownerGUID)
+                break;
+
+            bool const wantGameObject = e.target.sharedOwnerEntities.type == 2;
+            uint32 const entry = e.target.sharedOwnerEntities.entry;
+
+            float const dist = e.target.sharedOwnerEntities.maxDist ? (float)e.target.sharedOwnerEntities.maxDist : ref->GetVisibilityRange();
+
+            ObjectVector units;
+            GetWorldObjectsInDist(units, dist);
+
+            for (WorldObject* unit : units)
+            {
+                // an object is never a sibling of itself
+                if (unit->GetGUID() == ref->GetGUID())
+                    continue;
+
+                if (wantGameObject ? !IsGameObject(unit) : !IsCreature(unit))
+                    continue;
+
+                if (entry && unit->GetEntry() != entry)
+                    continue;
+
+                if (GetSummonerOrOwnerGUID(unit) != ownerGUID)
+                    continue;
+
+                targets.push_back(unit);
+            }
+
+            break;
+        }
         case SMART_TARGET_NONE:
         case SMART_TARGET_POSITION:
         default:
@@ -4499,13 +4592,31 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
                 break;
             }
         case SMART_EVENT_RECEIVE_HEAL:
-        case SMART_EVENT_DAMAGED:
         case SMART_EVENT_DAMAGED_TARGET:
             {
                 if (var0 > e.event.minMaxRepeat.max || var0 < e.event.minMaxRepeat.min)
                     return;
                 RecalcTimer(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax);
                 ProcessAction(e, unit);
+                break;
+            }
+        case SMART_EVENT_DAMAGED:
+            {
+                if (e.event.minMaxRepeat.rangeMin) // health check mode
+                {
+                    if (!me || !me->IsEngaged() || !me->GetMaxHealth())
+                        return;
+                    if (!me->HealthBelowPctDamaged(e.event.minMaxRepeat.rangeMin, var0))
+                        return;
+                    ProcessAction(e, unit);
+                }
+                else
+                {
+                    if (var0 > e.event.minMaxRepeat.max || var0 < e.event.minMaxRepeat.min)
+                        return;
+                    RecalcTimer(e, e.event.minMaxRepeat.repeatMin, e.event.minMaxRepeat.repeatMax);
+                    ProcessAction(e, unit);
+                }
                 break;
             }
         case SMART_EVENT_MOVEMENTINFORM:
@@ -4989,7 +5100,7 @@ void SmartScript::UpdateTimer(SmartScriptHolder& e, uint32 const diff)
         {
             if (!(e.action.cast.castFlags & SMARTCAST_INTERRUPT_PREVIOUS))
             {
-                if (me && me->HasUnitState(UNIT_STATE_CASTING))
+                if (me && me->IsActionPreventedByCasting())
                 {
                     RaisePriority(e);
                     return;
@@ -4998,7 +5109,7 @@ void SmartScript::UpdateTimer(SmartScriptHolder& e, uint32 const diff)
         }
 
         // Delay flee for assist event if casting
-        if (e.GetActionType() == SMART_ACTION_FLEE_FOR_ASSIST && me && me->HasUnitState(UNIT_STATE_CASTING))
+        if (e.GetActionType() == SMART_ACTION_FLEE_FOR_ASSIST && me && me->IsActionPreventedByCasting())
         {
             e.timer = 1200;
             return;
