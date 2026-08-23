@@ -175,6 +175,7 @@ public:
             { "wchange",           HandleChangeWeather,            rbac::RBAC_PERM_COMMAND_WCHANGE,           Console::No  },
             { "maxskill",          HandleMaxSkillCommand,          rbac::RBAC_PERM_COMMAND_MAXSKILL,          Console::No  },
             { "setskill",          HandleSetSkillCommand,          rbac::RBAC_PERM_COMMAND_SETSKILL,          Console::No  },
+            { "setskillsoap",      HandleSetSkillSoapCommand,      rbac::RBAC_PERM_COMMAND_SETSKILL,          Console::Yes },
             { "pinfo",             HandlePInfoCommand,             rbac::RBAC_PERM_COMMAND_PINFO,             Console::Yes },
             { "respawn",           HandleRespawnCommand,           rbac::RBAC_PERM_COMMAND_RESPAWN,           Console::No  },
             { "respawn all",       HandleRespawnAllCommand,        rbac::RBAC_PERM_COMMAND_RESPAWN_ALL,       Console::No  },
@@ -1954,18 +1955,31 @@ public:
 
     static bool HandleSetSkillCommand(ChatHandler* handler, Variant<Hyperlink<skill>, uint32> skillId, int32 level, Optional<uint16> maxPureSkill)
     {
-        uint32 skillID = uint32(skillId);
-
-        if (skillID <= 0)
-        {
-            handler->SendErrorMessage(LANG_INVALID_SKILL_ID, skillID);
-            return false;
-        }
-
         Player* target = handler->getSelectedPlayer();
         if (!target)
         {
             handler->SendErrorMessage(LANG_NO_CHAR_SELECTED);
+            return false;
+        }
+
+        return SetPlayerSkill(handler, target, uint32(skillId), level, maxPureSkill);
+    }
+
+    static bool HandleSetSkillSoapCommand(ChatHandler* handler, PlayerIdentifier player, Variant<Hyperlink<skill>, uint32> skillId, int32 level, Optional<uint16> maxPureSkill)
+    {
+        if (!player.IsConnected())
+        {
+            return false;
+        }
+
+        return SetPlayerSkill(handler, player.GetConnectedPlayer(), uint32(skillId), level, maxPureSkill);
+    }
+
+    static bool SetPlayerSkill(ChatHandler* handler, Player* target, uint32 skillID, int32 level, Optional<uint16> maxPureSkill)
+    {
+        if (skillID <= 0)
+        {
+            handler->SendErrorMessage(LANG_INVALID_SKILL_ID, skillID);
             return false;
         }
 

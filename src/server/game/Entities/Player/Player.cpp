@@ -13354,19 +13354,20 @@ void Player::InitGlyphsForLevel()
                 SetGlyphSlot(gs->Order - 1, gs->Id);
 
     uint8 level = GetLevel();
-    uint32 value = 0;
+    //ApocalipseBR - allow all glyphs for all levels
+    uint32 value = 0x3F;
 
     // 0x3F = 0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20 for 80 level
-    if (level >= 15)
-        value |= (0x01 | 0x02);
-    if (level >= 30)
-        value |= 0x08;
-    if (level >= 50)
-        value |= 0x04;
-    if (level >= 70)
-        value |= 0x10;
-    if (level >= 80)
-        value |= 0x20;
+    // if (level >= 15)
+    //     value |= (0x01 | 0x02);
+    // if (level >= 30)
+    //     value |= 0x08;
+    // if (level >= 50)
+    //     value |= 0x04;
+    // if (level >= 70)
+    //     value |= 0x10;
+    // if (level >= 80)
+    //     value |= 0x20;
 
     SetUInt32Value(PLAYER_GLYPHS_ENABLED, value);
 }
