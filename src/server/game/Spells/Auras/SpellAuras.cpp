@@ -1359,7 +1359,7 @@ void Aura::HandleAuraSpecificMods(AuraApplication const* aurApp, Unit* caster, b
                             if (Aura* aur = target->GetAura(74396))
                             {
                                 // Aura already there. Refresh duration and set original charges
-                                aur->SetCharges(2);
+                                aur->SetCharges(4);
                                 aur->RefreshDuration();
                             }
                             else

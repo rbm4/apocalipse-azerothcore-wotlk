@@ -1147,7 +1147,7 @@ void SpellMgr::LoadSpellInfoCorrections()
     // Fingers of Frost visual buff
     ApplySpellFix({ 74396 }, [](SpellInfo* spellInfo)
     {
-        spellInfo->ProcCharges = 2;
+        spellInfo->ProcCharges = 4;
         spellInfo->StackAmount = 0;
     });
 
