@@ -5457,6 +5457,8 @@ void Unit::RemoveNotOwnSingleTargetAuras()
         Aura* aura = *iter;
         if (aura->GetUnitOwner() != this)
         {
+            scAuras.erase(iter);
+            aura->SetIsSingleTarget(false);
             aura->Remove();
             iter = scAuras.begin();
         }
