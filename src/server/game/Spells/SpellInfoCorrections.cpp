@@ -220,14 +220,14 @@ void SpellMgr::LoadSpellInfoCorrections()
     // Divine Storm
     ApplySpellFix({ 54171 }, [](SpellInfo* spellInfo)
     {
-        spellInfo->MaxAffectedTargets = 3;
+        spellInfo->MaxAffectedTargets = 9;
         spellInfo->AttributesEx2 |= SPELL_ATTR2_IGNORE_LINE_OF_SIGHT;
     });
 
     // Divine Storm (Damage)
     ApplySpellFix({ 53385 }, [](SpellInfo* spellInfo)
     {
-        spellInfo->MaxAffectedTargets = 4;
+        spellInfo->MaxAffectedTargets = 12;
     });
 
     // Spitfire Totem
