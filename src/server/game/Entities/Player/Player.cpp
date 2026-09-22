@@ -13616,7 +13616,7 @@ void Player::InitGlyphsForLevel()
             if (gs->Order)
                 SetGlyphSlot(gs->Order - 1, gs->Id);
 
-    uint8 level = GetLevel();
+    // uint8 level = GetLevel();
     //ApocalipseBR - allow all glyphs for all levels
     uint32 value = 0x3F;
 
@@ -15449,7 +15449,7 @@ void Player::_LoadTalents(PreparedQueryResult result)
                 if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId))
                 {
                     uint8 removeSpecMask = specMask && specMask < (1 << MAX_TALENT_SPECS) ? specMask : SPEC_MASK_ALL;
-                    _removeTalentAuraAndSpells(spellId);
+                    _removeTalentAurasAndSpells(spellId);
                     removeSpell(spellId, removeSpecMask, false);
 
                     for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
