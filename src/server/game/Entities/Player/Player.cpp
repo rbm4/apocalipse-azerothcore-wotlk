@@ -2995,6 +2995,9 @@ void Player::AddNewMailDeliverTime(time_t deliver_time)
 
 bool Player::addTalent(uint32 spellId, uint8 addSpecMask, uint8 oldTalentRank)
 {
+    if (!addSpecMask || addSpecMask >= (1 << MAX_TALENT_SPECS))
+        return false;
+
     SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
     if (!SpellMgr::CheckSpellValid(spellInfo, spellId, true))
         return false;
@@ -3005,6 +3008,10 @@ bool Player::addTalent(uint32 spellId, uint8 addSpecMask, uint8 oldTalentRank)
 
     TalentEntry const* talentInfo = sTalentStore.LookupEntry(talentPos->talent_id);
     if (!talentInfo)
+        return false;
+
+    TalentTabEntry const* talentTabInfo = sTalentTabStore.LookupEntry(talentInfo->TalentTabID);
+    if (!talentTabInfo || !(getClassMask() & talentTabInfo->ClassMask))
         return false;
 
     // xinef: remove old talent rank if any
@@ -14374,6 +14381,9 @@ void Player::LearnTalent(uint32 talentId, uint32 talentRank, bool command /*= fa
     if (!spellInfo)
         return;
 
+    if(!addTalent(spellId, GetActiveSpecMask(), currentTalentRank))
+        return;
+
     bool learned = false;
 
     // xinef: if talent info has special marker in dbc - add to spell book
@@ -14391,8 +14401,6 @@ void Player::LearnTalent(uint32 talentId, uint32 talentRank, bool command /*= fa
         if (spellInfo->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
             if (sSpellMgr->IsAdditionalTalentSpell(spellInfo->Effects[i].TriggerSpell))
                 learnSpell(spellInfo->Effects[i].TriggerSpell);
-
-    addTalent(spellId, GetActiveSpecMask(), currentTalentRank);
 
     if (!command)
     {
@@ -15432,9 +15440,29 @@ void Player::_LoadTalents(PreparedQueryResult result)
             // xinef: checked
             uint32 spellId = (*result)[0].Get<uint32>();
             uint8 specMask = (*result)[1].Get<uint8>();
-            addTalent(spellId, specMask, 0);
-            TalentSpellPos const* talentPos = GetTalentSpellPos(spellId);
-            ASSERT(talentPos);
+            if (!addTalent(spellId, specMask, 0))
+            {
+                LOG_ERROR("entities.player", 
+                    "Player {} (GUID: {}) has invalid talent spell {}. The talent will be deleted and its points refunded.", 
+                    GetName(), GetGUID().GetCounter(), spellId);
+
+                if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId))
+                {
+                    uint8 removeSpecMask = specMask && specMask < (1 << MAX_TALENT_SPECS) ? specMask : SPEC_MASK_ALL;
+                    _removeTalentAuraAndSpells(spellId);
+                    removeSpell(spellId, removeSpecMask, false);
+
+                    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                        if (spellInfo->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
+                            if (sSpellMgr->IsAdditionalTalentSpell(spellInfo->Effects[i].TriggerSpell))
+                                removeSpell(spellInfo->Effects[i].TriggerSpell, removeSpecMask, false);
+                }
+
+                CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_TALENT_BY_SPELL);
+                stmt->SetData(0, GetGUID().GetCounter());
+                stmt->SetData(1, spellId);
+                CharacterDatabase.execute(stmt);
+            }
 
         } while (result->NextRow());
     }
