@@ -15461,7 +15461,7 @@ void Player::_LoadTalents(PreparedQueryResult result)
                 CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_TALENT_BY_SPELL);
                 stmt->SetData(0, GetGUID().GetCounter());
                 stmt->SetData(1, spellId);
-                CharacterDatabase.execute(stmt);
+                CharacterDatabase.Execute(stmt);
             }
 
         } while (result->NextRow());
