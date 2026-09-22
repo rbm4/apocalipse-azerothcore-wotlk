@@ -3010,7 +3010,7 @@ bool Player::addTalent(uint32 spellId, uint8 addSpecMask, uint8 oldTalentRank)
     if (!talentInfo)
         return false;
 
-    TalentTabEntry const* talentTabInfo = sTalentTabStore.LookupEntry(talentInfo->TalentTabID);
+    TalentTabEntry const* talentTabInfo = sTalentTabStore.LookupEntry(talentInfo->TalentTab);
     if (!talentTabInfo || !(getClassMask() & talentTabInfo->ClassMask))
         return false;
 
