@@ -98,6 +98,7 @@ enum DeathKnightSpells
     SPELL_DK_RUNIC_RETURN                        = 61258,
     SPELL_DK_DEATH_COIL_R1                       = 47541,
     SPELL_DK_DEATH_GRIP_INITIAL                  = 49576,
+    SPELL_DK_DEATH_STRIKE_R1                     = 49998,
     SPELL_DK_GLYPH_OF_SCOURGE_STRIKE_SCRIPT      = 69961,
     SPELL_DK_HOWLING_BLAST_R1                    = 49184,
     SPELL_DK_OBLITERATE_OFF_HAND_R1              = 66198,
@@ -1629,14 +1630,17 @@ class spell_dk_death_pact : public SpellScript
     }
 };
 
-// -49998 - Death Strike
+// -49998, -66188 - Death Strike
 class spell_dk_death_strike : public SpellScript
 {
     PrepareSpellScript(spell_dk_death_strike);
 
-    bool Validate(SpellInfo const* /*spellInfo*/) override
+    bool Validate(SpellInfo const* spellInfo) override
     {
-        return ValidateSpellInfo({ SPELL_DK_DEATH_STRIKE_HEAL });
+        uint32 firstRank = sSpellMgr->GetFirstSpellInChain(spellInfo->Id);
+        return (firstRank == SPELL_DK_DEATH_STRIKE_R1 ||
+            firstRank == SPELL_DK_DEATH_STRIKE_OFF_HAND_R1) &&
+            ValidateSpellInfo({ SPELL_DK_DEATH_STRIKE_HEAL });
     }
 
     void HandleDummy(SpellEffIndex /*effIndex*/)

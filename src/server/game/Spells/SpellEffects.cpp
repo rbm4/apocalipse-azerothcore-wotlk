@@ -4560,7 +4560,7 @@ void Spell::EffectApplyGlyph(SpellEffIndex effIndex)
     //         minLevel = 80;
     //         break;
     // }
-    if (minLevel && m_caster->GetLevel() < minLevel)
+    if (minLevel && player->GetLevel() < minLevel)
     {
         SendCastResult(SPELL_FAILED_GLYPH_SOCKET_LOCKED);
         return;
