@@ -712,10 +712,11 @@ class spell_dk_dancing_rune_weapon : public AuraScript
         if (SpellInfo const* procSpell = eventInfo.GetSpellInfo())
         {
             // xinef: ugly hack
+            float const originalCombatReach = GetUnitOwner()->GetCombatReach();
             if (!procSpell->IsAffectingArea())
                 GetUnitOwner()->SetFloatValue(UNIT_FIELD_COMBATREACH, 10.0f);
             dancingRuneWeapon->CastSpell(target, procSpell->Id, true, nullptr, aurEff, dancingRuneWeapon->GetGUID());
-            GetUnitOwner()->SetFloatValue(UNIT_FIELD_COMBATREACH, 0.01f);
+            GetUnitOwner()->SetFloatValue(UNIT_FIELD_COMBATREACH, originalCombatReach);
         }
         else if (eventInfo.GetDamageInfo())
         {
