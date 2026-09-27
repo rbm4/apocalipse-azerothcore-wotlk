@@ -16,19 +16,36 @@
  */
 
 #include "ModuleDatabasePool.h"
+#include "AdhocStatement.h"
 #include "Errors.h"
 #include "Log.h"
 #include "MySQLConnection.h"
 #include "MySQLPreparedStatement.h"
+#include "PCQueue.h"
+#include "PreparedStatement.h"
 #include "QueryResult.h"
+#include "SQLOperation.h"
 #include "Transaction.h"
 #include <errmsg.h>
 #include <limits>
 #include <mysqld_error.h>
 #include <thread>
 
+namespace
+{
+class ModulePingOperation : public SQLOperation
+{
+    bool Execute() override
+    {
+        m_conn->Ping();
+        return true;
+    }
+};
+}
+
 ModuleDatabasePool::ModuleDatabasePool()
-    : _connectionInfo(""), _synchThreads(0)
+    : _connectionInfo(""), _queue(std::make_unique<ProducerConsumerQueue<SQLOperation*>>()), _asyncThreads(0),
+      _synchThreads(0)
 {
 }
 
@@ -37,67 +54,68 @@ ModuleDatabasePool::~ModuleDatabasePool()
     Close();
 }
 
-void ModuleDatabasePool::SetConnectionInfo(std::string_view infoString, uint8 synchThreads)
+void ModuleDatabasePool::SetConnectionInfo(std::string_view infoString, uint8 asyncThreads, uint8 synchThreads)
 {
     _connectionInfo = MySQLConnectionInfo(infoString);
+    _asyncThreads = asyncThreads;
     _synchThreads = synchThreads;
 }
 
 uint32 ModuleDatabasePool::Open()
 {
-    if (!_synchThreads)
+    if (!_asyncThreads || !_synchThreads)
     {
-        LOG_ERROR("sql.driver", "ModuleDatabasePool: database `{}` was configured with 0 synchronous connections, "
-            "at least one is required.", _connectionInfo.database);
+        LOG_ERROR("sql.driver", "ModuleDatabasePool: database `{}` requires at least one asynchronous and one "
+            "synchronous connection (configured: {} asynchronous, {} synchronous).", _connectionInfo.database,
+            _asyncThreads, _synchThreads);
         return CR_UNKNOWN_ERROR;
     }
 
     Close();
+    _queue->Reset();
 
-    for (uint8 i = 0; i < _synchThreads; ++i)
-    {
-        auto conn = std::unique_ptr<MySQLConnection>(CreateConnection(_connectionInfo));
-        uint32 result = conn->Open();
-        if (result != 0)
-        {
-            LOG_ERROR("sql.driver", "ModuleDatabasePool: could not open connection {}/{} to database `{}`, error {}",
-                i + 1, _synchThreads, _connectionInfo.database, result);
-            Close();
-            return result;
-        }
+    uint32 result = OpenConnections(IDX_ASYNC, _asyncThreads);
+    if (result)
+        return result;
 
-        _connections.push_back(std::move(conn));
-    }
+    result = OpenConnections(IDX_SYNCH, _synchThreads);
+    if (result)
+        return result;
 
     return 0;
 }
 
 bool ModuleDatabasePool::PrepareStatements()
 {
-    for (auto const& conn : _connections)
+    for (auto const& connections : _connections)
     {
-        conn->LockIfReady();
-        if (!conn->PrepareStatements())
+        for (auto const& conn : connections)
         {
-            conn->Unlock();
-            Close();
-            return false;
-        }
-
-        conn->Unlock();
-    }
-
-    if (!_connections.empty())
-    {
-        MySQLConnection const* conn = _connections.front().get();
-        _preparedStatementSize.assign(conn->m_stmts.size(), 0);
-        for (std::size_t i = 0; i < conn->m_stmts.size(); ++i)
-        {
-            if (MySQLPreparedStatement* stmt = conn->m_stmts[i].get())
+            conn->LockIfReady();
+            if (!conn->PrepareStatements())
             {
-                uint32 const paramCount = stmt->GetParameterCount();
-                ASSERT(paramCount < std::numeric_limits<uint8>::max());
-                _preparedStatementSize[i] = static_cast<uint8>(paramCount);
+                conn->Unlock();
+                Close();
+                return false;
+            }
+
+            conn->Unlock();
+
+            std::size_t const preparedSize = conn->m_stmts.size();
+            if (_preparedStatementSize.size() < preparedSize)
+                _preparedStatementSize.resize(preparedSize);
+
+            for (std::size_t i = 0; i < preparedSize; ++i)
+            {
+                if (_preparedStatementSize[i] > 0)
+                    continue;
+
+                if (MySQLPreparedStatement* stmt = conn->m_stmts[i].get())
+                {
+                    uint32 const paramCount = stmt->GetParameterCount();
+                    ASSERT(paramCount < std::numeric_limits<uint8>::max());
+                    _preparedStatementSize[i] = static_cast<uint8>(paramCount);
+                }
             }
         }
     }
@@ -107,16 +125,19 @@ bool ModuleDatabasePool::PrepareStatements()
 
 void ModuleDatabasePool::Close()
 {
-    _connections.clear();
+    _queue->Shutdown();
+    _connections[IDX_ASYNC].clear();
+    _connections[IDX_SYNCH].clear();
 
     _preparedStatementSize.clear();
 }
 
 void ModuleDatabasePool::Execute(std::string_view sql)
 {
-    // Synchronous for now - kept separate from DirectExecute so async execution
-    // can be added later without touching callers.
-    DirectExecute(sql);
+    if (sql.empty() || _connections[IDX_ASYNC].empty())
+        return;
+
+    Enqueue(new BasicStatementTask(sql));
 }
 
 void ModuleDatabasePool::DirectExecute(std::string_view sql)
@@ -124,7 +145,7 @@ void ModuleDatabasePool::DirectExecute(std::string_view sql)
     if (sql.empty())
         return;
 
-    if (_connections.empty())
+    if (_connections[IDX_SYNCH].empty())
         return;
 
     MySQLConnection* conn = GetFreeConnection();
@@ -134,7 +155,7 @@ void ModuleDatabasePool::DirectExecute(std::string_view sql)
 
 QueryResult ModuleDatabasePool::Query(std::string_view sql)
 {
-    if (_connections.empty())
+    if (_connections[IDX_SYNCH].empty())
         return QueryResult(nullptr);
 
     MySQLConnection* conn = GetFreeConnection();
@@ -154,22 +175,18 @@ QueryResult ModuleDatabasePool::Query(std::string_view sql)
 
 void ModuleDatabasePool::Execute(PreparedStatementBase* stmt)
 {
-    if (_connections.empty())
+    if (_connections[IDX_ASYNC].empty())
     {
         delete stmt;
         return;
     }
 
-    MySQLConnection* conn = GetFreeConnection();
-    conn->Execute(stmt);
-    conn->Unlock();
-
-    delete stmt;
+    Enqueue(new PreparedStatementTask(stmt));
 }
 
 PreparedQueryResult ModuleDatabasePool::Query(PreparedStatementBase* stmt)
 {
-    if (_connections.empty())
+    if (_connections[IDX_SYNCH].empty())
     {
         delete stmt;
         return PreparedQueryResult(nullptr);
@@ -196,9 +213,17 @@ uint8 ModuleDatabasePool::GetPreparedStatementParamCount(uint32 index) const
     return index < _preparedStatementSize.size() ? _preparedStatementSize[index] : 0;
 }
 
+void ModuleDatabasePool::CommitTransaction(std::shared_ptr<TransactionBase> transaction)
+{
+    if (_connections[IDX_ASYNC].empty())
+        return;
+
+    Enqueue(new TransactionTask(std::move(transaction)));
+}
+
 void ModuleDatabasePool::DirectCommitTransaction(std::shared_ptr<TransactionBase> transaction)
 {
-    if (_connections.empty())
+    if (_connections[IDX_SYNCH].empty())
         return;
 
     MySQLConnection* conn = GetFreeConnection();
@@ -227,7 +252,7 @@ void ModuleDatabasePool::DirectCommitTransaction(std::shared_ptr<TransactionBase
 void ModuleDatabasePool::KeepAlive()
 {
     //! Ping connections that are not busy; a locked connection is in use and alive.
-    for (auto const& conn : _connections)
+    for (auto const& conn : _connections[IDX_SYNCH])
     {
         if (conn->LockIfReady())
         {
@@ -235,23 +260,59 @@ void ModuleDatabasePool::KeepAlive()
             conn->Unlock();
         }
     }
+
+    for (std::size_t i = 0; i < _connections[IDX_ASYNC].size(); ++i)
+        Enqueue(new ModulePingOperation());
+}
+
+std::size_t ModuleDatabasePool::QueueSize() const
+{
+    return _queue->Size();
+}
+
+uint32 ModuleDatabasePool::OpenConnections(InternalIndex type, uint8 numConnections)
+{
+    for (uint8 i = 0; i < numConnections; ++i)
+    {
+        auto conn = type == IDX_ASYNC
+            ? std::unique_ptr<MySQLConnection>(CreateConnection(_queue.get(), _connectionInfo))
+            : std::unique_ptr<MySQLConnection>(CreateConnection(_connectionInfo));
+        uint32 result = conn->Open();
+        if (result != 0)
+        {
+            LOG_ERROR("sql.driver", "ModuleDatabasePool: could not open {} connection {}/{} to database `{}`, error {}",
+                type == IDX_ASYNC ? "asynchronous" : "synchronous", i + 1, numConnections,
+                _connectionInfo.database, result);
+            Close();
+            return result;
+        }
+
+        _connections[type].push_back(std::move(conn));
+    }
+
+    return 0;
+}
+
+void ModuleDatabasePool::Enqueue(SQLOperation* operation)
+{
+    _queue->Push(operation);
 }
 
 MySQLConnection* ModuleDatabasePool::GetFreeConnection()
 {
     uint8 i = 0;
-    auto const num_cons = _connections.size();
+    auto const numCons = _connections[IDX_SYNCH].size();
     MySQLConnection* connection = nullptr;
 
     //! Block forever until a connection is free
     for (;;)
     {
-        connection = _connections[++i % num_cons].get();
+        connection = _connections[IDX_SYNCH][++i % numCons].get();
         //! Must be matched with connection->Unlock() or you will get deadlocks
         if (connection->LockIfReady())
             break;
 
-        if (i % num_cons == 0)
+        if (i % numCons == 0)
             std::this_thread::yield();
     }
 
